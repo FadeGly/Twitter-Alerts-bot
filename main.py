@@ -158,7 +158,7 @@ async def scheduler():
     await init_db()
     while True:
         await check_new_tweets()
-        await asyncio.sleep(45)
+        await asyncio.sleep(120)  # теперь проверка каждые 2 минуты — лимит не превышается никогда
 
 async def main():
     asyncio.create_task(scheduler())

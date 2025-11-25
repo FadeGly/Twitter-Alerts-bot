@@ -1,20 +1,19 @@
 import os
 import asyncio
 import aiosqlite
+import feedparser
 import re
-from tweepy.asynchronous import AsyncClient
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from datetime import datetime
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-twitter = AsyncClient(bearer_token=BEARER_TOKEN, wait_on_rate_limit=True)
 
 DB_NAME = "data.db"
 
@@ -25,7 +24,7 @@ async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.executescript('''
             CREATE TABLE IF NOT EXISTS subs (user_id INTEGER, username TEXT, PRIMARY KEY(user_id, username));
-            CREATE TABLE IF NOT EXISTS last_tweet (username TEXT PRIMARY KEY, tweet_id TEXT);
+            CREATE TABLE IF NOT EXISTS last_entries (username TEXT PRIMARY KEY, entry_id TEXT);
         ''')
         await db.commit()
 
@@ -44,86 +43,67 @@ async def del_sub(uid, name):
 async def get_my_subs(uid):
     async with aiosqlite.connect(DB_NAME) as db:
         cur = await db.execute("SELECT username FROM subs WHERE user_id=?", (uid,))
-        rows = await cur.fetchall()
-        return [r[0] for r in rows]
+        return [r[0] for r in await cur.fetchall()]
 
-async def get_all_unique_usernames():
+async def get_all_usernames():
     async with aiosqlite.connect(DB_NAME) as db:
         cur = await db.execute("SELECT DISTINCT username FROM subs")
-        rows = await cur.fetchall()
-        return [r[0] for r in rows]
+        return [r[0] for r in await cur.fetchall()]
 
-async def get_subscribers(username):
-    username = username.lstrip('@').lower()
+async def get_subscribers(name):
+    name = name.lstrip('@').lower()
     async with aiosqlite.connect(DB_NAME) as db:
-        cur = await db.execute("SELECT user_id FROM subs WHERE username=?", (username,))
-        rows = await cur.fetchall()
-        return [r[0] for r in rows]
+        cur = await db.execute("SELECT user_id FROM subs WHERE username=?", (name,))
+        return [r[0] for r in await cur.fetchall()]
 
-async def set_last(username, tid):
-    username = username.lstrip('@').lower()
+async def set_last_entry(name, entry_id):
+    name = name.lstrip('@').lower()
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT OR REPLACE INTO last_tweet VALUES (?, ?)", (username, tid))
+        await db.execute("INSERT OR REPLACE INTO last_entries VALUES (?, ?)", (name, entry_id))
         await db.commit()
 
-async def get_last(username):
-    username = username.lstrip('@').lower()
+async def get_last_entry(name):
+    name = name.lstrip('@').lower()
     async with aiosqlite.connect(DB_NAME) as db:
-        cur = await db.execute("SELECT tweet_id FROM last_tweet WHERE username=?", (username,))
+        cur = await db.execute("SELECT entry_id FROM last_entries WHERE username=?", (name,))
         row = await cur.fetchone()
         return row[0] if row else None
 
-# === ГЛАВНОЕ ИСПРАВЛЕНИЕ: ОДИН ЦИКЛ + ПАУЗЫ + ПРЕДВАРИТЕЛЬНАЯ ЗАГРУЗКА ID ===
-async def check_new_tweets():
-    usernames = await get_all_unique_usernames()
+async def check_rss_feeds():
+    usernames = await get_all_usernames()
     if not usernames:
         return
 
-    # Один запрос на все usernames сразу (экономим 50–90% запросов)
-    try:
-        users_response = await twitter.get_users(usernames=usernames)
-        if not users_response.data:
-            return
-        user_id_map = {user.username.lower(): user.id for user in users_response.data}
-    except Exception as e:
-        print(f"Ошибка получения пользователей: {e}")
-        return
-
-    # Последовательно проверяем каждого, с паузой 5–7 сек между запросами
     for username in usernames:
-        user_id = user_id_map.get(username.lower())
-        if not user_id:
-            continue
-
         try:
-            tweets = await twitter.get_users_tweets(
-                user_id,
-                max_results=5,
-                exclude=["replies", "retweets"]
-            )
-            if not tweets.data:
-                await asyncio.sleep(5)
+            rss_url = f"https://rsshub.app/twitter/user/{username}"
+            feed = feedparser.parse(rss_url)
+            if not feed.entries:
                 continue
 
-            last_id = await get_last(username)
-            new_tweets = [t for t in tweets.data if not last_id or str(t.id) > last_id]
+            last_entry = await get_last_entry(username)
+            new_entries = []
+            for entry in feed.entries:
+                entry_id = entry.id or entry.link
+                if not last_entry or entry_id != last_entry:
+                    new_entries.append(entry)
+                else:
+                    break  # дальше старые
 
-            if new_tweets:
-                for tweet in reversed(new_tweets):  # с самого нового
-                    await set_last(username, str(tweet.id))
-                    link = f"https://x.com/{username}/status/{tweet.id}"
-                    msg = f"Новый твит от @{username}\n\n{tweet.text}\n\n{link}"
-                    subs = await get_subscribers(username)
-                    for uid in subs:
+            if new_entries:
+                subscribers = await get_subscribers(username)
+                for entry in reversed(new_entries):  # от новых к старым
+                    title = entry.title
+                    link = entry.link
+                    msg = f"Новый твит от @{username}\n\n{title}\n\n{link}"
+                    for uid in subscribers:
                         await bot.send_message(uid, msg, disable_web_page_preview=True)
-
-            await asyncio.sleep(6)  # 6 сек между запросами = 10 запросов в минуту → никогда не будет rate limit
+                    await set_last_entry(username, entry.id or entry.link)
 
         except Exception as e:
             print(f"Ошибка @{username}: {e}")
-            await asyncio.sleep(10)
 
-# === Хендлеры (без изменений) ===
+# === Хендлеры ===
 @dp.message(Command("start"))
 async def start(m: types.Message):
     kb = [
@@ -132,12 +112,12 @@ async def start(m: types.Message):
         [types.KeyboardButton(text="Удалить")],
         [types.KeyboardButton(text="/check")]
     ]
-    await m.answer("Уведомления о новых твитах X/Twitter\nРаботает 24/7", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
+    await m.answer("Бот уведомлений о твитах (через RSSHub — бесплатно, без лимитов)", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
 @dp.message(Command("check"))
 async def manual(m: types.Message):
     await m.answer("Проверяю...")
-    await check_new_tweets()
+    await check_rss_feeds()
     await m.answer("Готово!")
 
 @dp.message(lambda m: m.text == "Добавить")
@@ -173,11 +153,17 @@ async def del_d(m: types.Message):
     await del_sub(m.from_user.id, u)
     await m.answer(f"Удалил @{u}")
 
-# === Запуск ===
-async def main():
+# === Авто ===
+async def scheduler():
+    await asyncio.sleep(5)
     await init_db()
-    asyncio.create_task(check_new_tweets())  # первая проверка сразу (чтобы заполнить last_tweet и не слать старые)
-    dp.startup.register(lambda: print("Бот запущен!"))
+    while True:
+        await check_rss_feeds()
+        await asyncio.sleep(120)  # каждые 2 минуты — без лимитов
+
+async def main():
+    asyncio.create_task(scheduler())
+    print("Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

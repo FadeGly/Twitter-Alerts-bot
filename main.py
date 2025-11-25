@@ -77,12 +77,12 @@ async def check_rss_feeds():
     new_count = 0
     for username in usernames:
         try:
-            # Nitter RSS — работает в 2025, фиды не пустые
-            rss_url = f"https://nitter.1d4.us/{username}/rss"
+            # Twiiit.com — ротация Nitter, работает в 2025
+            rss_url = f"https://twiiit.com/{username}/rss"
             feed = feedparser.parse(rss_url)
             print(f"@{username}: получено {len(feed.entries)} твитов в фиде")
             if not feed.entries:
-                print(f"Пустой фид для @{username} — попробуй другой инстанс Nitter")
+                print(f"Пустой фид для @{username} — инстанс Nitter упал")
                 continue
 
             last_entry = await get_last_entry(username)
@@ -92,7 +92,7 @@ async def check_rss_feeds():
                 if not last_entry or entry_id != last_entry:
                     new_entries.append(entry)
                 else:
-                    break  # дальше старые
+                    break
 
             if new_entries:
                 subscribers = await get_subscribers(username)
@@ -122,13 +122,13 @@ async def start(m: types.Message):
         [types.KeyboardButton(text="Удалить")],
         [types.KeyboardButton(text="/check")]
     ]
-    await m.answer("Бот уведомлений о твитах (Nitter RSS — бесплатно, обновление 1–5 мин)", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
+    await m.answer("Бот уведомлений о твитах (Twiiit — ротация Nitter, обновление 1–5 мин)", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
 @dp.message(Command("check"))
 async def manual(m: types.Message):
     await m.answer("Проверяю...")
     await check_rss_feeds()
-    await m.answer("Готово! Проверь логи в Railway (или новые твиты пришли).")
+    await m.answer("Готово! Если новых твитов нет, проверь логи в Railway.")
 
 @dp.message(lambda m: m.text == "Добавить")
 async def add_s(m: types.Message, state: FSMContext):

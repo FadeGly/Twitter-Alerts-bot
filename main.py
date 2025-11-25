@@ -10,6 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+RSS_APP_KEY = os.getenv("RSS_APP_KEY", "")  # Опционально, для private фидов
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -77,12 +78,14 @@ async def check_rss_feeds():
     new_count = 0
     for username in usernames:
         try:
-            # Twiiit.com — ротация Nitter, работает в 2025
-            rss_url = f"https://twiiit.com/{username}/rss"
+            # RSS.app — стабильный, бесплатный tier до 50 запросов/день
+            rss_url = f"https://rss.app/feeds/{username}.xml"
+            if RSS_APP_KEY:
+                rss_url += f"?key={RSS_APP_KEY}"
             feed = feedparser.parse(rss_url)
             print(f"@{username}: получено {len(feed.entries)} твитов в фиде")
             if not feed.entries:
-                print(f"Пустой фид для @{username} — инстанс Nitter упал")
+                print(f"Пустой фид для @{username} — зарегистрируй free аккаунт на rss.app")
                 continue
 
             last_entry = await get_last_entry(username)
@@ -122,7 +125,7 @@ async def start(m: types.Message):
         [types.KeyboardButton(text="Удалить")],
         [types.KeyboardButton(text="/check")]
     ]
-    await m.answer("Бот уведомлений о твитах (Twiiit — ротация Nitter, обновление 1–5 мин)", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
+    await m.answer("Бот уведомлений о твитах (RSS.app — бесплатно до 50 запросов/день)", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
 @dp.message(Command("check"))
 async def manual(m: types.Message):

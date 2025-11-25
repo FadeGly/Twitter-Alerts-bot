@@ -8,7 +8,6 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from datetime import datetime
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -72,13 +71,17 @@ async def get_last_entry(name):
 async def check_rss_feeds():
     usernames = await get_all_usernames()
     if not usernames:
+        print("Нет подписок")
         return
 
     for username in usernames:
         try:
-            rss_url = f"https://rsshub.app/twitter/user/{username}"
+            # RSSBridge вместо RSSHub — работает стабильнее в 2025
+            rss_url = f"https://rss-bridge.org/?action=display&bridge=TwitterUserBridge&context=UserTweets&username={username}"
             feed = feedparser.parse(rss_url)
+            print(f"@{username}: получено {len(feed.entries)} твитов в фиде")  # Лог для отладки
             if not feed.entries:
+                print(f"Пустой фид для @{username}")
                 continue
 
             last_entry = await get_last_entry(username)
@@ -88,17 +91,20 @@ async def check_rss_feeds():
                 if not last_entry or entry_id != last_entry:
                     new_entries.append(entry)
                 else:
-                    break  # дальше старые
+                    break
 
             if new_entries:
                 subscribers = await get_subscribers(username)
-                for entry in reversed(new_entries):  # от новых к старым
-                    title = entry.title
+                print(f"@{username}: найдено {len(new_entries)} новых твитов для {len(subscribers)} пользователей")
+                for entry in reversed(new_entries):
+                    title = entry.title or "Новый твит"
                     link = entry.link
                     msg = f"Новый твит от @{username}\n\n{title}\n\n{link}"
                     for uid in subscribers:
                         await bot.send_message(uid, msg, disable_web_page_preview=True)
                     await set_last_entry(username, entry.id or entry.link)
+            else:
+                print(f"@{username}: новых твитов нет")
 
         except Exception as e:
             print(f"Ошибка @{username}: {e}")
@@ -112,13 +118,13 @@ async def start(m: types.Message):
         [types.KeyboardButton(text="Удалить")],
         [types.KeyboardButton(text="/check")]
     ]
-    await m.answer("Бот уведомлений о твитах (через RSSHub — бесплатно, без лимитов)", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
+    await m.answer("Бот уведомлений о твитах (RSSBridge — бесплатно, обновление 1–5 мин)", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
 @dp.message(Command("check"))
 async def manual(m: types.Message):
     await m.answer("Проверяю...")
     await check_rss_feeds()
-    await m.answer("Готово!")
+    await m.answer("Готово! Проверь логи в Railway, если твиты не пришли.")
 
 @dp.message(lambda m: m.text == "Добавить")
 async def add_s(m: types.Message, state: FSMContext):
@@ -159,7 +165,7 @@ async def scheduler():
     await init_db()
     while True:
         await check_rss_feeds()
-        await asyncio.sleep(120)  # каждые 2 минуты — без лимитов
+        await asyncio.sleep(120)
 
 async def main():
     asyncio.create_task(scheduler())
